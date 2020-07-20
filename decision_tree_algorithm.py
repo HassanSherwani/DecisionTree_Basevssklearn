@@ -17,8 +17,9 @@ def train_test_split(df, test_size):
 
     return train_df, test_df
 
-# Data Pure
-
+# HELPER FUNCTIONS
+# 1.Data Pure
+# creating a function for purity check
 def check_purity(data):
     label_column = data[:, -1]
     unique_classes = np.unique(label_column)
@@ -28,8 +29,7 @@ def check_purity(data):
     else:
         return False
 
-# Classify
-
+# 2.Classify
 def classify_data(data):
     label_column = data[:, -1]
     unique_classes, counts_unique_classes = np.unique(label_column, return_counts=True)
@@ -39,26 +39,36 @@ def classify_data(data):
 
     return classification
 
-
+#3.potential splits
 def get_potential_splits(data):
     potential_splits = {}
     _, n_columns = data.shape
     for column_index in range(n_columns - 1):  # excluding the last column which is the label
-        potential_splits[column_index] = []
         values = data[:, column_index]
         unique_values = np.unique(values)
 
-        for index in range(len(unique_values)):
-            if index != 0:
-                current_value = unique_values[index]
-                previous_value = unique_values[index - 1]
-                potential_split = (current_value + previous_value) / 2
-
-                potential_splits[column_index].append(potential_split)
+        potential_splits[column_index] = unique_values
 
     return potential_splits
 
+# 4. Split data
+def split_data(data, split_column, split_value):
+    split_column_values = data[:, split_column]
 
+    type_of_feature = FEATURE_TYPES[split_column]
+    if type_of_feature == "continuous":
+        data_below = data[split_column_values <= split_value]
+        data_above = data[split_column_values > split_value]
+
+    # feature is categorical
+    else:
+        data_below = data[split_column_values == split_value]
+        data_above = data[split_column_values != split_value]
+
+    return data_below, data_above
+
+
+# 4. Lowest Overall Entropy
 def calculate_entropy(data):
     label_column = data[:, -1]
     _, counts = np.unique(label_column, return_counts=True)
@@ -79,7 +89,7 @@ def calculate_overall_entropy(data_below, data_above):
 
     return overall_entropy
 
-
+# Best Split
 def determine_best_split(data, potential_splits):
     overall_entropy = 9999
     for column_index in potential_splits:
@@ -95,4 +105,116 @@ def determine_best_split(data, potential_splits):
     return best_split_column, best_split_value
 
 
+# select features as X and y
+def determine_type_of_feature(df):
+    feature_types = []
+    n_unique_values_treshold = 15  # we can cange if categories count is higher than 15
+    for feature in df.columns:
+        if feature != "label":
+            unique_values = df[feature].unique()
+            example_value = unique_values[0]
 
+            if (isinstance(example_value, str)) or (len(unique_values) <= n_unique_values_treshold):
+                feature_types.append("categorical")
+            else:
+                feature_types.append("continuous")
+
+    return feature_types
+
+# decision tree algorithm
+def decision_tree_algorithm(df, counter=0, min_samples=2, max_depth=5):
+    # data preparations
+    if counter == 0:
+        global COLUMN_HEADERS, FEATURE_TYPES
+        COLUMN_HEADERS = df.columns
+        FEATURE_TYPES = determine_type_of_feature(df)
+        data = df.values
+    else:
+        data = df
+
+        # base cases
+    if (check_purity(data)) or (len(data) < min_samples) or (counter == max_depth):
+        classification = classify_data(data)
+
+        return classification
+
+
+    # recursive part
+    else:
+        counter += 1
+
+        # helper functions
+        potential_splits = get_potential_splits(data)
+        split_column, split_value = determine_best_split(data, potential_splits)
+        data_below, data_above = split_data(data, split_column, split_value)
+
+        # check for empty data
+        if len(data_below) == 0 or len(data_above) == 0:
+            classification = classify_data(data)
+            return classification
+
+        # determine question
+        feature_name = COLUMN_HEADERS[split_column]
+        type_of_feature = FEATURE_TYPES[split_column]
+        if type_of_feature == "continuous":
+            question = "{} <= {}".format(feature_name, split_value)
+
+        # feature is categorical
+        else:
+            question = "{} = {}".format(feature_name, split_value)
+
+        # instantiate sub-tree
+        sub_tree = {question: []}
+
+        # find answers (recursion)
+        yes_answer = decision_tree_algorithm(data_below, counter, min_samples, max_depth)
+        no_answer = decision_tree_algorithm(data_above, counter, min_samples, max_depth)
+
+        # If the answers are the same, then there is no point in asking the qestion.
+        # This could happen when the data is classified even though it is not pure
+        # yet (min_samples or max_depth base case).
+        if yes_answer == no_answer:
+            sub_tree = yes_answer
+        else:
+            sub_tree[question].append(yes_answer)
+            sub_tree[question].append(no_answer)
+
+        return sub_tree
+
+
+#Implement classification
+def classify_example(example, tree):
+    question = list(tree.keys())[0]
+    feature_name, comparison_operator, value = question.split(" ")
+
+    # ask question
+    if comparison_operator == "<=":  # feature is continuous
+        if example[feature_name] <= float(value):
+            answer = tree[question][0]
+        else:
+            answer = tree[question][1]
+
+    # feature is categorical
+    else:
+        if str(example[feature_name]) == value:
+            answer = tree[question][0]
+        else:
+            answer = tree[question][1]
+
+    # base case
+    if not isinstance(answer, dict):
+        return answer
+
+    # recursive part
+    else:
+        residual_tree = answer
+        return classify_example(example, residual_tree)
+
+#Accuracy
+def calculate_accuracy(df, tree):
+    df["classification"] = df.apply(classify_example, axis=1, args=(tree,))
+    df["classification_correct"] = df["classification"] == df["label"]
+
+    accuracy = df["classification_correct"].mean()
+
+    return accuracy
